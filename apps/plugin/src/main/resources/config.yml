@@ -1,0 +1,6 @@
+# API base URL of the platform
+api-url: "https://api.business.com/v1"
+# Plugin key from Store admin > Store settings > In-game delivery plugin
+plugin-key: ""
+# How often to check for new purchases (seconds)
+poll-interval-seconds: 30

@@ -1,0 +1,294 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum StoreRole {
+  OWNER
+  STAFF
+}
+
+enum PackageCategory {
+  RANK
+  CRATE
+  COIN
+  OTHER
+}
+
+enum DurationType {
+  PERMANENT
+  DAYS
+  MONTHLY
+}
+
+enum OrderStatus {
+  PENDING
+  AWAITING_VERIFICATION
+  SUCCESSFUL
+  FAILED
+  CANCELLED
+}
+
+enum DeliveryStatus {
+  QUEUED
+  EXECUTED
+  FAILED
+}
+
+/// Platform staff and store admins share one login table.
+model Admin {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  name         String?
+  isSuperAdmin Boolean       @default(false)
+  isActive     Boolean       @default(true)
+  memberships  StoreMember[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Store {
+  id                      String          @id @default(cuid())
+  slug                    String          @unique
+  name                    String
+  description             String?
+  logoUrl                 String?
+  isEnabled               Boolean         @default(true)
+  serverName              String?
+  serverIp                String?
+  supportInfo             String?
+  /// 0-90, applied to every package price
+  discountPercent         Int             @default(0)
+  /// Platform commission charged to the customer on top of the package price (set by super admin)
+  commissionPercent       Decimal         @default(5) @db.Decimal(5, 2)
+  requireVerifiedUsername Boolean         @default(false)
+  currency                String          @default("INR")
+  settings                Json            @default("{}")
+  pluginKeyHash           String?
+  pluginLastSeenAt        DateTime?
+  members                 StoreMember[]
+  packages                Package[]
+  categories              Category[]
+  payment                 PaymentConfig?
+  orders                  Order[]
+  customers               StoreCustomer[]
+  settlements             Settlement[]
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+}
+
+model StoreMember {
+  id        String    @id @default(cuid())
+  storeId   String
+  adminId   String
+  role      StoreRole @default(STAFF)
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  admin     Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@unique([storeId, adminId])
+}
+
+model Category {
+  id        String          @id @default(cuid())
+  storeId   String
+  name      String
+  type      PackageCategory
+  sort      Int             @default(0)
+  store     Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  packages  Package[]
+  createdAt DateTime        @default(now())
+
+  @@index([storeId])
+}
+
+model Package {
+  id             String       @id @default(cuid())
+  storeId        String
+  categoryId     String
+  name           String
+  description    String?
+  imageUrl       String?
+  /// money stored as integer paise
+  pricePaise     Int
+  durationType   DurationType @default(PERMANENT)
+  durationDays   Int?
+  /// e.g. "lp user {username} parent add vip"
+  commands       String[]
+  /// executed when a timed package expires
+  expiryCommands String[]
+  requireOnline  Boolean      @default(false)
+  isEnabled      Boolean      @default(true)
+  sort           Int          @default(0)
+  store          Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category       Category     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  orderItems     OrderItem[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([storeId, isEnabled])
+}
+
+model PaymentConfig {
+  id            String   @id @default(cuid())
+  storeId       String   @unique
+  upiId         String?
+  upiPayeeName  String?
+  qrImageUrl    String?
+  bankName      String?
+  accountName   String?
+  accountNumber String?
+  ifsc          String?
+  instructions  String?
+  store         Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  updatedAt     DateTime @updatedAt
+}
+
+/// Global player identity (one per SSO account)
+model Player {
+  id         String          @id @default(cuid())
+  provider   String
+  providerId String
+  email      String?
+  avatarUrl  String?
+  displayName String?
+  mcUsername String?
+  mcUuid     String?
+  mcVerified Boolean         @default(false)
+  linkCode   String?         @unique
+  linkCodeExpiresAt DateTime?
+  stores     StoreCustomer[]
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  @@unique([provider, providerId])
+  @@index([mcUsername])
+  @@index([mcUuid])
+}
+
+/// Per-store customer record
+model StoreCustomer {
+  id        String   @id @default(cuid())
+  storeId   String
+  playerId  String
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  orders    Order[]
+  createdAt DateTime @default(now())
+
+  @@unique([storeId, playerId])
+}
+
+model Order {
+  id                String        @id @default(cuid())
+  number            String        @unique
+  storeId           String
+  customerId        String
+  status            OrderStatus   @default(PENDING)
+  /// sum of package list prices
+  subtotalPaise     Int
+  /// store discount
+  discountPaise     Int           @default(0)
+  /// subtotal - discount (what the store earns)
+  storeAmountPaise  Int
+  /// commission % snapshot at order time
+  commissionPercent Decimal       @db.Decimal(5, 2)
+  /// platform commission paid by the customer
+  platformFeePaise  Int
+  /// storeAmount + platformFee (what the customer pays)
+  totalPaise        Int
+  mcUsername        String
+  mcUuid            String?
+  txnReference      String?
+  referenceAt       DateTime?
+  verifiedById      String?
+  verifiedAt        DateTime?
+  adminNote         String?
+  settlementId      String?
+  items             OrderItem[]
+  deliveries        Delivery[]
+  store             Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer          StoreCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  settlement        Settlement?   @relation(fields: [settlementId], references: [id])
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@unique([storeId, txnReference])
+  @@index([storeId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id         String    @id @default(cuid())
+  orderId    String
+  packageId  String
+  nameSnap   String
+  pricePaise Int
+  quantity   Int       @default(1)
+  expiresAt  DateTime?
+  expired    Boolean   @default(false)
+  order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  package    Package   @relation(fields: [packageId], references: [id], onDelete: Restrict)
+
+  @@index([expiresAt, expired])
+}
+
+/// Command queue consumed by the in-game plugin
+model Delivery {
+  id           String         @id @default(cuid())
+  storeId      String
+  orderId      String
+  command      String
+  mcUsername   String
+  mcUuid       String?
+  requireOnline Boolean       @default(false)
+  status       DeliveryStatus @default(QUEUED)
+  runAfter     DateTime       @default(now())
+  attempts     Int            @default(0)
+  lastError    String?
+  executedAt   DateTime?
+  order        Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt    DateTime       @default(now())
+
+  @@index([storeId, status, runAfter])
+}
+
+/// Commission collected from a store (customers pay the store directly via UPI)
+model Settlement {
+  id          String   @id @default(cuid())
+  storeId     String
+  amountPaise Int
+  reference   String?
+  note        String?
+  orders      Order[]
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  storeId   String?
+  action    String
+  entity    String
+  entityId  String?
+  data      Json?
+  createdAt DateTime @default(now())
+  actor     Admin?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, createdAt])
+  @@index([createdAt])
+}
+
+model GlobalConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

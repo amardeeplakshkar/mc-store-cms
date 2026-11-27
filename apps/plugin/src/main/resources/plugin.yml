@@ -1,0 +1,16 @@
+name: StoreDelivery
+version: ${version}
+main: com.business.storedelivery.StoreDeliveryPlugin
+api-version: '1.20'
+description: Delivers webstore purchases and links player accounts
+commands:
+  link:
+    description: Link your Minecraft account to the webstore
+    usage: /link <code>
+  storedelivery:
+    description: StoreDelivery admin commands
+    usage: /storedelivery <reload|poll>
+    permission: storedelivery.admin
+permissions:
+  storedelivery.admin:
+    default: op
